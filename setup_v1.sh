@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    echo "Neither curl nor wget found. Installing curl..."
+    apt-get update -y
+    apt-get install -y curl
+fi
+
 # ======= USEAGE ================
 # curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh | sudo bash
 #
