@@ -120,6 +120,16 @@ require_root() {
     fi
 }
 
+ensure_downloader() {
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        log_both "Neither curl nor wget found. Installing curl..."
+        apt-get update -y >>"$LOG_FILE" 2>&1
+        apt-get install -y curl >>"$LOG_FILE" 2>&1
+    else
+        log_file "Downloader present: curl=$(command -v curl || echo none), wget=$(command -v wget || echo none)"
+    fi
+}
+
 check_distro() {
     if [[ -r /etc/os-release ]]; then
         # shellcheck disable=SC1091
@@ -450,6 +460,7 @@ summary() {
 main() {
     init_logging
     require_root
+    ensure_downloader
     parse_args "$@"
     check_distro
     prompt_user_info
