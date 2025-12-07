@@ -12,6 +12,7 @@ set -euo pipefail
 # - Optional Docker install
 # - Optional zsh install + basic config
 # - Modular features controlled via CLI flags
+# - Logs everything to /var/log/bootstrap.log
 # ==============================
 
 # -------- Defaults / config --------
@@ -25,10 +26,52 @@ INSTALL_ZSH="N"
 
 INTERACTIVE="Y"
 
+LOG_FILE="/var/log/bootstrap.log"
+
 # If running non-interactively, you can set NEWUSER_PASSWORD via env
 NEWUSER_PASSWORD="${NEWUSER_PASSWORD:-}"
 
-# -------- Helpers --------
+# -------- Logging helpers --------
+init_logging() {
+    # Make sure we can write to the log file
+    mkdir -p "$(dirname "$LOG_FILE")"
+    touch "$LOG_FILE"
+    chmod 600 "$LOG_FILE"
+
+    {
+        echo
+        echo "===================="
+        echo "Bootstrap run started: $(date --iso-8601=seconds)"
+        echo "===================="
+    } >> "$LOG_FILE"
+}
+
+log_console() {
+    # Console only (short messages)
+    echo "$*"
+}
+
+log_file() {
+    # File-only detailed logging (no console)
+    printf '%s %s\n' "$(date --iso-8601=seconds)" "$*" >> "$LOG_FILE"
+}
+
+log_both() {
+    # Console + file
+    echo "$*"
+    printf '%s %s\n' "$(date --iso-8601=seconds)" "$*" >> "$LOG_FILE"
+}
+
+log_error() {
+    # Console to stderr + file
+    >&2 echo "$*"
+    printf '%s [ERROR] %s\n' "$(date --iso-8601=seconds)" "$*" >> "$LOG_FILE"
+}
+
+# Trap for unexpected errors
+trap 'log_error "Script aborted unexpectedly at line $LINENO."' ERR
+
+# -------- Core helpers --------
 usage() {
     cat <<EOF
 Usage: sudo ./setup.sh [options]
@@ -47,20 +90,12 @@ Options:
 
 Environment:
   NEWUSER_PASSWORD    Password used for the created user when --non-interactive is set.
-
-Examples:
-  Interactive, full:
-    sudo ./setup.sh
-
-  Non-interactive, with Docker + zsh:
-    NEWUSER_PASSWORD='MyS3cret' sudo ./setup.sh --user jack --with-docker --with-zsh --non-interactive
-
 EOF
 }
 
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
-        echo "This script must be run as root (use sudo)." >&2
+        log_error "This script must be run as root (use sudo)."
         exit 1
     fi
 }
@@ -71,20 +106,20 @@ check_distro() {
         . /etc/os-release
         case "${ID_LIKE:-$ID}" in
             *debian*|*ubuntu* )
-                echo "Detected Debian/Ubuntu-like system: ${PRETTY_NAME:-$ID}"
+                log_both "Detected Debian/Ubuntu-like system: ${PRETTY_NAME:-$ID}"
                 ;;
             * )
-                echo "Warning: This script is intended for Debian/Ubuntu. Detected: ${PRETTY_NAME:-$ID}"
+                log_both "Warning: This script is intended for Debian/Ubuntu. Detected: ${PRETTY_NAME:-$ID}"
                 read -r -p "Continue anyway? [y/N]: " cont
                 cont=${cont:-N}
                 if [[ ! "$cont" =~ ^[Yy]$ ]]; then
-                    echo "Aborting."
+                    log_both "Aborting due to unsupported distro."
                     exit 1
                 fi
                 ;;
         esac
     else
-        echo "Cannot detect OS (no /etc/os-release). Continuing blindly."
+        log_both "Cannot detect OS (no /etc/os-release). Continuing blindly."
     fi
 }
 
@@ -120,12 +155,13 @@ parse_args() {
                 exit 0
                 ;;
             *)
-                echo "Unknown option: $1"
+                log_error "Unknown option: $1"
                 usage
                 exit 1
                 ;;
         esac
     done
+    log_file "Parsed args: USERNAME=$USERNAME, ADD_SUDO=$ADD_SUDO, INSTALL_DEV_PACKAGES=$INSTALL_DEV_PACKAGES, INSTALL_DOCKER=$INSTALL_DOCKER, INSTALL_ZSH=$INSTALL_ZSH, INTERACTIVE=$INTERACTIVE"
 }
 
 prompt_user_info() {
@@ -134,9 +170,10 @@ prompt_user_info() {
         USERNAME=${input_user:-$USERNAME}
 
         if id "$USERNAME" >/dev/null 2>&1; then
-            echo "User '$USERNAME' already exists."
+            log_both "User '$USERNAME' already exists."
             USE_EXISTING="yes"
         else
+            log_both "User '$USERNAME' does not exist yet, will be created."
             USE_EXISTING="no"
         fi
 
@@ -147,9 +184,11 @@ prompt_user_info() {
             read -s -p "Confirm password: " PASSWORD2
             echo
             if [[ "$PASSWORD" != "$PASSWORD2" ]]; then
-                echo "Passwords do not match, try again."
+                log_console "Passwords do not match, try again."
+                log_file "Password mismatch while configuring user '$USERNAME'."
             elif [[ -z "$PASSWORD" ]]; then
-                echo "Password must not be empty, try again."
+                log_console "Password must not be empty, try again."
+                log_file "Empty password attempted for user '$USERNAME'."
             else
                 break
             fi
@@ -163,51 +202,55 @@ prompt_user_info() {
     else
         # Non-interactive mode
         if id "$USERNAME" >/dev/null 2>&1; then
-            echo "User '$USERNAME' already exists."
+            log_both "User '$USERNAME' already exists (non-interactive)."
             USE_EXISTING="yes"
         else
+            log_both "User '$USERNAME' does not exist yet, will be created (non-interactive)."
             USE_EXISTING="no"
         fi
 
         if [[ -z "${NEWUSER_PASSWORD}" ]]; then
-            echo "Non-interactive mode requires NEWUSER_PASSWORD env var."
+            log_error "Non-interactive mode requires NEWUSER_PASSWORD env var."
             exit 1
         fi
         PASSWORD="$NEWUSER_PASSWORD"
         ADD_SSH="N"  # keep ssh key handling manual in non-interactive
     fi
+
+    log_file "User config: USERNAME=$USERNAME, USE_EXISTING=$USE_EXISTING, ADD_SUDO=$ADD_SUDO, ADD_SSH=$ADD_SSH"
 }
 
 create_or_update_user() {
     if [[ "$USE_EXISTING" == "no" ]]; then
-        echo "Creating user '$USERNAME'..."
+        log_both "Creating user '$USERNAME'..."
         useradd -m -s /bin/bash "$USERNAME"
     else
-        echo "Using existing user '$USERNAME'."
+        log_both "Using existing user '$USERNAME'."
     fi
 
-    echo "Setting password for '$USERNAME'..."
+    log_file "Setting password for '$USERNAME'."
     echo "${USERNAME}:${PASSWORD}" | chpasswd
 
     if [[ "$ADD_SUDO" =~ ^[Yy]$ ]]; then
-        echo "Adding '$USERNAME' to sudo group..."
+        log_both "Adding '$USERNAME' to sudo group..."
         if getent group sudo >/dev/null 2>&1; then
             usermod -aG sudo "$USERNAME"
         elif getent group wheel >/dev/null 2>&1; then
             usermod -aG wheel "$USERNAME"
         else
-            echo "No sudo/wheel group found. Skipping sudo group membership."
+            log_error "No sudo/wheel group found. Skipping sudo group membership."
         fi
     fi
 }
 
 setup_ssh_key() {
     if [[ ! "$ADD_SSH" =~ ^[Yy]$ ]]; then
+        log_file "SSH key addition skipped for '$USERNAME'."
         return
     fi
 
-    echo "Paste the SSH public key for '$USERNAME' below."
-    echo "End with an empty line."
+    log_console "Paste the SSH public key for '$USERNAME' below."
+    log_console "End with an empty line."
     SSH_KEY=""
     while IFS= read -r line; do
         [[ -z "$line" ]] && break
@@ -215,7 +258,8 @@ setup_ssh_key() {
     done
 
     if [[ -z "${SSH_KEY// }" ]]; then
-        echo "No SSH key entered, skipping."
+        log_console "No SSH key entered, skipping."
+        log_file "No SSH key entered for '$USERNAME'."
         return
     fi
 
@@ -229,31 +273,33 @@ setup_ssh_key() {
     chmod 600 "$AUTH_KEYS"
     chown -R "$USERNAME":"$USERNAME" "$SSH_DIR"
 
-    echo "SSH key added to ${AUTH_KEYS}."
+    log_both "SSH key added to ${AUTH_KEYS}."
 }
 
 system_update() {
-    echo "Updating apt package lists..."
-    apt-get update -y
+    log_both "Updating apt package lists..."
+    apt-get update -y >>"$LOG_FILE" 2>&1
 
-    echo "Upgrading existing packages..."
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    log_both "Upgrading existing packages..."
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y >>"$LOG_FILE" 2>&1
 }
 
 install_fastfetch() {
-    echo "Installing fastfetch..."
-    if ! apt-get install -y fastfetch; then
-        echo "fastfetch package not found in repositories. Skipping installation."
+    log_both "Installing fastfetch..."
+    if ! apt-get install -y fastfetch >>"$LOG_FILE" 2>&1; then
+        log_error "fastfetch package not found in repositories. Skipping installation."
+    else
+        log_file "fastfetch installed successfully."
     fi
 }
 
 install_common_dev_packages() {
     if [[ "$INSTALL_DEV_PACKAGES" != "Y" ]]; then
-        echo "Skipping common dev packages installation."
+        log_both "Skipping common dev packages installation."
         return
     fi
 
-    echo "Installing common dev packages (git, curl, wget, vim, build-essential)..."
+    log_both "Installing common dev packages (git, curl, wget, vim, build-essential)..."
     apt-get install -y \
         git \
         curl \
@@ -262,25 +308,25 @@ install_common_dev_packages() {
         build-essential \
         ca-certificates \
         gnupg \
-        lsb-release
+        lsb-release >>"$LOG_FILE" 2>&1
+
+    log_file "Common dev packages installed."
 }
 
 install_docker() {
     if [[ "$INSTALL_DOCKER" != "Y" ]]; then
-        echo "Skipping Docker installation."
+        log_both "Skipping Docker installation."
         return
     fi
 
-    echo "Installing Docker (Docker CE) for Debian/Ubuntu..."
+    log_both "Installing Docker (Docker CE) for Debian/Ubuntu..."
 
-    # Remove old versions if any
-    apt-get remove -y docker docker-engine docker.io containerd runc || true
+    apt-get remove -y docker docker-engine docker.io containerd runc >>"$LOG_FILE" 2>&1 || true
 
-    # Set up repository (using official Docker instructions)
     install -m 0755 -d /etc/apt/keyrings
     if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
         curl -fsSL https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg | \
-        gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        gpg --dearmor -o /etc/apt/keyrings/docker.gpg >>"$LOG_FILE" 2>&1
         chmod a+r /etc/apt/keyrings/docker.gpg
     fi
 
@@ -291,32 +337,32 @@ install_docker() {
 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$(. /etc/os-release && echo "$ID") \
  ${codename} stable" > /etc/apt/sources.list.d/docker.list
 
-    apt-get update -y
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    apt-get update -y >>"$LOG_FILE" 2>&1
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >>"$LOG_FILE" 2>&1
 
-    systemctl enable docker
-    systemctl start docker
+    systemctl enable docker >>"$LOG_FILE" 2>&1
+    systemctl start docker >>"$LOG_FILE" 2>&1
 
-    # Add user to docker group
     if getent group docker >/dev/null 2>&1; then
         usermod -aG docker "$USERNAME"
-        echo "User '$USERNAME' added to docker group (logout/login required)."
+        log_both "Docker installed. User '$USERNAME' added to docker group (logout/login required)."
+    else
+        log_error "Docker group not found after installation."
     fi
 }
 
 install_zsh_and_configure() {
     if [[ "$INSTALL_ZSH" != "Y" ]]; then
-        echo "Skipping zsh installation."
+        log_both "Skipping zsh installation."
         return
     fi
 
-    echo "Installing zsh..."
-    apt-get install -y zsh
+    log_both "Installing zsh..."
+    apt-get install -y zsh >>"$LOG_FILE" 2>&1
 
     USER_HOME=$(eval echo "~$USERNAME")
     ZSHRC="${USER_HOME}/.zshrc"
 
-    # Minimal zsh config
     if [[ ! -f "$ZSHRC" ]]; then
         cat > "$ZSHRC" <<'EOF'
 # Basic zsh config
@@ -338,50 +384,51 @@ alias l='ls -CF'
 if command -v fastfetch >/dev/null 2>&1; then
     fastfetch
 fi
-
 EOF
         chown "$USERNAME":"$USERNAME" "$ZSHRC"
+        log_file "Created default .zshrc for '$USERNAME'."
     fi
 
-    echo "Setting zsh as default shell for '$USERNAME'..."
-    chsh -s "$(command -v zsh)" "$USERNAME"
+    log_both "Setting zsh as default shell for '$USERNAME'..."
+    chsh -s "$(command -v zsh)" "$USERNAME" >>"$LOG_FILE" 2>&1
 }
 
 enable_fastfetch_in_shells() {
     USER_HOME=$(eval echo "~$USERNAME")
 
-    # bash
     BASHRC="${USER_HOME}/.bashrc"
     FASTFETCH_SNIPPET=$'\n# Run fastfetch on interactive login\nif command -v fastfetch >/dev/null 2>&1; then\n    fastfetch\nfi\n'
 
     if [[ -f "$BASHRC" ]]; then
         if ! grep -q "fastfetch" "$BASHRC" 2>/dev/null; then
-            echo "Enabling fastfetch for '$USERNAME' in ${BASHRC}..."
+            log_both "Enabling fastfetch for '$USERNAME' in ${BASHRC}..."
             printf "%s" "$FASTFETCH_SNIPPET" >> "$BASHRC"
             chown "$USERNAME":"$USERNAME" "$BASHRC"
         else
-            echo "fastfetch already referenced in ${BASHRC}, not adding again."
+            log_both "fastfetch already referenced in ${BASHRC}, not adding again."
         fi
     fi
-
-    # If zsh is installed but user keeps bash, .zshrc part is handled in install_zsh_and_configure
 }
 
 summary() {
-    echo
-    echo "========================================"
-    echo "Bootstrap complete."
-    echo "User:         $USERNAME"
-    echo "Sudo:         $([[ "$ADD_SUDO" =~ ^[Yy]$ ]] && echo yes || echo no)"
-    echo "SSH key:      $([[ "$ADD_SSH" =~ ^[Yy]$ ]] && echo added || echo skipped)"
-    echo "Dev packages: $([[ "$INSTALL_DEV_PACKAGES" == "Y" ]] && echo installed || echo skipped)"
-    echo "Docker:       $([[ "$INSTALL_DOCKER" == "Y" ]] && echo installed || echo skipped)"
-    echo "zsh:          $([[ "$INSTALL_ZSH" == "Y" ]] && echo installed/configured || echo skipped)"
-    echo "fastfetch:    installed (if package found) and hooked into bash/zsh where configured."
-    echo "========================================"
+    log_console
+    log_console "========================================"
+    log_console "Bootstrap complete."
+    log_console "User:         $USERNAME"
+    log_console "Sudo:         $([[ "$ADD_SUDO" =~ ^[Yy]$ ]] && echo yes || echo no)"
+    log_console "SSH key:      $([[ "$ADD_SSH" =~ ^[Yy]$ ]] && echo added || echo skipped)"
+    log_console "Dev packages: $([[ "$INSTALL_DEV_PACKAGES" == "Y" ]] && echo installed || echo skipped)"
+    log_console "Docker:       $([[ "$INSTALL_DOCKER" == "Y" ]] && echo installed || echo skipped)"
+    log_console "zsh:          $([[ "$INSTALL_ZSH" == "Y" ]] && echo installed/configured || echo skipped)"
+    log_console "fastfetch:    installed (if package found) and hooked into bash/zsh where configured."
+    log_console "Log file:     $LOG_FILE"
+    log_console "========================================"
+
+    log_file "Bootstrap finished successfully."
 }
 
 main() {
+    init_logging
     require_root
     parse_args "$@"
     check_distro
