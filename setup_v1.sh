@@ -8,13 +8,13 @@ if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
 fi
 
 # ======= USEAGE ================
-# curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh | sudo bash
+# curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/refs/heads/main/setup_v1.sh | sudo bash
 #
-# curl -fsSLO https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh
+# curl -fsSLO https://raw.githubusercontent.com/pythongod/infra_public/refs/heads/main/setup_v1.sh
 # chmod +x setup.sh
 # sudo ./setup.sh
 # 
-# curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh | \
+# curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/refs/heads/main/setup_v1.sh | \
 #  NEWUSER_PASSWORD='MyS3cret' sudo bash -s -- \
 #    --user jack \
 #    --with-docker \
