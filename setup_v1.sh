@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ======= USEAGE ================
+# curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh | sudo bash
+#
+# curl -fsSLO https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh
+# chmod +x setup.sh
+# sudo ./setup.sh
+# 
+# curl -fsSL https://raw.githubusercontent.com/pythongod/infra_public/main/setup.sh | \
+#  NEWUSER_PASSWORD='MyS3cret' sudo bash -s -- \
+#    --user jack \
+#    --with-docker \
+#    --with-zsh \
+#    --non-interactive
+#
 # ==============================
 # Debian/Ubuntu bootstrap script
 # - Creates user (default: jack)
